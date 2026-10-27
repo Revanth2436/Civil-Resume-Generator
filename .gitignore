@@ -1,0 +1,30 @@
+# Python virtual environments
+.venv/
+venv/
+**/venv/
+**/.venv/
+ENV/
+env/
+
+# Python cache & compiled files
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Output & temporary resume files
+**/outputs/
+outputs/
+*.docx.bak
+~$*.docx
+Tailored_Resume_RAW.docx
+
+# Large Archives
+*.zip
+*.tar.gz
+
+# System & Editor files
+.DS_Store
+**/.DS_Store
+.idea/
+.vscode/
