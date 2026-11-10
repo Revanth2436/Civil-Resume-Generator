@@ -18,10 +18,32 @@ outputs/
 *.docx.bak
 ~$*.docx
 Tailored_Resume_RAW.docx
+Revanth_Dirisipamu.docx
+Sasank_Talluri.docx
+
+# Whitelist template files
+!**/templates/resume_template.docx
+!templates/resume_template.docx
 
 # Large Archives
 *.zip
 *.tar.gz
+
+# Backups
+_backups/
+**/_backups/
+*.bak
+*.bak_*
+
+# Secrets & Environment variables
+.env
+.env.*
+*.env
+credentials.json
+token.json
+
+# Vercel local cache
+.vercel/
 
 # System & Editor files
 .DS_Store

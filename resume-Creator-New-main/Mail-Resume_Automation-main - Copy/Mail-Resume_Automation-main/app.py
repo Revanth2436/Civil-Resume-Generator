@@ -1,7 +1,7 @@
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
+from fastapi.responses import HTMLResponse, FileResponse, Response
 from pydantic import BaseModel
 import re
 import subprocess
@@ -11,10 +11,62 @@ import sys
 import urllib.parse
 from pathlib import Path
 
-app = FastAPI()
+# Add project directory to sys.path to ensure module imports succeed anywhere
+CURRENT_DIR = Path(__file__).parent.resolve()
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
-# Mount static files
-app.mount("/static", StaticFiles(directory="static"), name="static")
+from schema_validator import (
+    EXACT_12_KEYS,
+    Resume12KeyPayload,
+    validate_resume_payload,
+    migrate_19_to_12_keys,
+)
+from test_render import (
+    generate_docx_bytes,
+    resolve_template_path,
+    estimate_rendered_lines,
+    TEMPLATE_PATH,
+)
+
+# Constants & Dynamic Path Resolution
+BASE_DIR = CURRENT_DIR
+
+def resolve_static_dir() -> Path:
+    candidates = [
+        BASE_DIR / "static",
+        Path.cwd() / "static",
+        Path.cwd() / "resume-Creator-New-main/Mail-Resume_Automation-main - Copy/Mail-Resume_Automation-main/static",
+        BASE_DIR.parent / "static",
+    ]
+    for c in candidates:
+        if c.is_dir():
+            return c
+    return BASE_DIR / "static"
+
+def resolve_data_path() -> Path:
+    candidates = [
+        BASE_DIR / "data/base_content.json",
+        Path.cwd() / "data/base_content.json",
+        Path.cwd() / "resume-Creator-New-main/Mail-Resume_Automation-main - Copy/Mail-Resume_Automation-main/data/base_content.json",
+        BASE_DIR.parent / "data/base_content.json",
+    ]
+    for c in candidates:
+        if c.exists():
+            return c
+    return BASE_DIR / "data/base_content.json"
+
+STATIC_DIR = resolve_static_dir()
+JSON_PATH = resolve_data_path()
+
+# Detect environment: local vs cloud (Vercel sets VERCEL=1)
+IS_CLOUD = os.environ.get("VERCEL", "") == "1" or os.environ.get("RENDER", "") == "true" or os.environ.get("IS_CLOUD", "") == "true"
+
+app = FastAPI(title="Civil Resume Generator")
+
+# Mount static files safely
+if STATIC_DIR.is_dir():
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 # Data models
 class JDEmailRequest(BaseModel):
@@ -23,18 +75,13 @@ class JDEmailRequest(BaseModel):
 class ResumeRequest(BaseModel):
     json_content: dict
 
-# Constants
-BASE_DIR = Path(__file__).parent.resolve()
-JSON_PATH = BASE_DIR / "data/base_content.json"
-RENDER_SCRIPT = BASE_DIR / "test_render.py"
-
-# Detect environment: local vs cloud
-IS_CLOUD = os.environ.get("RENDER", "") == "true" or os.environ.get("IS_CLOUD", "") == "true"
-
 @app.get("/", response_class=HTMLResponse)
 async def read_root():
-    with open(BASE_DIR / "static/index.html", "r", encoding="utf-8") as f:
-        return f.read()
+    index_file = STATIC_DIR / "index.html"
+    if index_file.exists():
+        with open(index_file, "r", encoding="utf-8") as f:
+            return f.read()
+    return HTMLResponse("<h1>Civil Resume Generator</h1><p>index.html not found</p>", status_code=404)
 
 US_STATES = {
     'alabama': 'AL', 'alaska': 'AK', 'arizona': 'AZ', 'arkansas': 'AR', 'california': 'CA',
@@ -132,10 +179,12 @@ async def draft_email(request: JDEmailRequest):
             else:
                 base_data = {}
             base_data["LOCATION"] = detected_location
+            ordered_data = {k: base_data.get(k, "" if not k.endswith("_BULLETS") else []) for k in EXACT_12_KEYS}
             with open(JSON_PATH, "w", encoding="utf-8") as f:
-                json.dump(base_data, f, indent=4)
+                json.dump(ordered_data, f, indent=4)
         except Exception as e:
             print(f"Error auto-updating location in JSON: {e}")
+
 
     # 4. Construct Subject and Body
     subject = f"Interested in {job_title}"
@@ -186,49 +235,73 @@ Reference:
             raise HTTPException(status_code=500, detail=f"Failed to open browser: {str(e)}")
 
 @app.post("/api/generate-resume")
-async def generate_resume(request: ResumeRequest):
+async def generate_resume(request: ResumeRequest, download: bool = False):
     try:
-        # 1. Update JSON
-        with open(JSON_PATH, "w", encoding="utf-8") as f:
-            json.dump(request.json_content, f, indent=4)
-        
-        # 2. Run test_render.py
-        result = subprocess.run(
-            [sys.executable, str(RENDER_SCRIPT)], 
-            capture_output=True, 
-            text=True, 
-            check=True
-        )
-        
-        # 3. Find the output path from stdout
-        output_line = next((line for line in result.stdout.splitlines() if "[OK] Rendered OK:" in line), None)
-        
-        if output_line:
-            file_path = output_line.split("[OK] Rendered OK:")[1].strip()
-            
-            if IS_CLOUD:
-                # On cloud: return download endpoint
-                return {
-                    "status": "success",
-                    "message": "Resume generated! Click to download.",
-                    "path": file_path,
-                    "download_url": f"/api/download-resume?path={urllib.parse.quote(file_path)}"
-                }
-            else:
-                # On local: open in file explorer
-                if os.name == 'nt':
-                    subprocess.run(["explorer", "/select,", str(file_path)])
-                else:
-                    subprocess.run(["open", "-R", str(file_path)])
-                return {"status": "success", "message": "Resume generated and opened in File Explorer", "path": file_path}
-        else:
-             raise HTTPException(status_code=500, detail="Could not determine output file path from script execution.")
+        # 1. Validate and normalize payload using exact 12-key schema validator
+        normalized_data, errors, warnings = validate_resume_payload(request.json_content, strict=False)
+        if errors:
+            raise HTTPException(status_code=400, detail="Schema validation error: " + "; ".join(errors))
 
-    except subprocess.CalledProcessError as e:
-        error_msg = f"Script execution failed.\nStdout: {e.stdout}\nStderr: {e.stderr}"
-        raise HTTPException(status_code=500, detail=error_msg)
+        # 2. Update JSON file locally if writable (never crash in cloud)
+        if not IS_CLOUD:
+            try:
+                with open(JSON_PATH, "w", encoding="utf-8") as f:
+                    json.dump(normalized_data, f, indent=4)
+            except Exception as e:
+                print(f"Notice: local base_content.json not updated: {e}")
+
+        # 3. Generate DOCX entirely in memory
+        template_file = resolve_template_path()
+        docx_buffer = generate_docx_bytes(
+            raw_ctx=normalized_data,
+            template_path=template_file,
+            strict=False,
+        )
+        file_bytes = docx_buffer.getvalue()
+
+        # 4. In cloud (Vercel) or when requested, return downloadable response directly
+        if IS_CLOUD or download:
+            headers = {
+                "Content-Disposition": 'attachment; filename="Revanth_Dirisipamu.docx"',
+                "Access-Control-Expose-Headers": "Content-Disposition",
+            }
+            return Response(
+                content=file_bytes,
+                media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                headers=headers,
+            )
+        else:
+            # Local desktop mode: write to numbered outputs folder and reveal in Finder/Explorer
+            from test_render import BASE_FOLDER, FINAL_FILENAME, get_next_subfolder
+            target_folder = get_next_subfolder(BASE_FOLDER)
+            target_folder.mkdir(parents=True, exist_ok=True)
+            out_file = target_folder / FINAL_FILENAME
+            out_file.write_bytes(file_bytes)
+
+            if os.name == 'nt':
+                try:
+                    subprocess.run(["explorer", "/select,", str(out_file)])
+                except Exception:
+                    pass
+            else:
+                try:
+                    subprocess.run(["open", "-R", str(out_file)])
+                except Exception:
+                    pass
+
+            return {
+                "status": "success",
+                "message": "Resume generated and opened in File Explorer",
+                "path": str(out_file),
+                "download_url": f"/api/download-resume?path={urllib.parse.quote(str(out_file))}",
+                "warnings": warnings if warnings else None,
+            }
+
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/download-resume")
 async def download_resume(path: str):

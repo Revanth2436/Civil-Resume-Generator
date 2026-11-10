@@ -1,0 +1,13 @@
+[project]
+name = "civil-resume-generator"
+version = "0.1.0"
+description = "Civil Resume Generator for Revanth Dirisipamu"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.110.0",
+    "uvicorn>=0.28.0",
+    "pydantic>=2.6.0",
+    "python-docx>=1.1.0",
+    "docxtpl>=0.17.0",
+]

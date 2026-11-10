@@ -65,8 +65,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
 
+            // If gmail_url is provided (cloud/Vercel or fallback), open it in a new tab
+            if (data.gmail_url) {
+                window.open(data.gmail_url, '_blank');
+            }
+
             const locMsg = data.location ? ` | Location: ${data.location}` : '';
-            setStatus(draftStatus, `Success! Check your browser. (Recipient: ${data.recipient || 'None found'}${locMsg})`, 'success');
+            setStatus(draftStatus, `Success! Draft opened. (Recipient: ${data.recipient || 'None found'}${locMsg})`, 'success');
         } catch (error) {
             setStatus(draftStatus, `Error: ${error.message}`, 'error');
         }
@@ -84,11 +89,11 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             jsonObj = JSON.parse(jsonText);
         } catch (e) {
-            setStatus(generateStatus, 'Invalid JSON format.', 'error');
+            setStatus(generateStatus, 'Invalid JSON format: ' + e.message, 'error');
             return;
         }
 
-        setStatus(generateStatus, 'Generating resume and opening Finder...', 'loading');
+        setStatus(generateStatus, 'Generating resume...', 'loading');
 
         try {
             const response = await fetch('/api/generate-resume', {
@@ -99,13 +104,44 @@ document.addEventListener('DOMContentLoaded', () => {
                 body: JSON.stringify({ json_content: jsonObj }),
             });
 
-            const data = await response.json();
-
             if (!response.ok) {
-                throw new Error(data.detail || 'Failed to generate resume');
+                let errorMsg = 'Failed to generate resume';
+                try {
+                    const errData = await response.json();
+                    errorMsg = errData.detail || errorMsg;
+                } catch (_) {}
+                throw new Error(errorMsg);
             }
 
-            setStatus(generateStatus, 'Success! Resume generated.', 'success');
+            const contentType = response.headers.get('content-type') || '';
+            const disposition = response.headers.get('content-disposition') || '';
+
+            // Handle direct binary DOCX download (cloud / Vercel response)
+            if (
+                contentType.includes('application/vnd.openxmlformats') ||
+                contentType.includes('application/octet-stream') ||
+                disposition.includes('attachment')
+            ) {
+                const blob = await response.blob();
+                const downloadUrl = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = downloadUrl;
+                a.download = 'Revanth_Dirisipamu.docx';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+                window.URL.revokeObjectURL(downloadUrl);
+                setStatus(generateStatus, 'Success! Resume generated and downloaded.', 'success');
+            } else {
+                // Handle JSON response (local desktop mode)
+                const data = await response.json();
+                if (data.download_url) {
+                    window.location.href = data.download_url;
+                }
+                const folderName = data.path ? data.path.split('/').slice(-2, -1)[0] : '';
+                const msg = folderName ? `Success! Created folder #${folderName} with Revanth_Dirisipamu.docx` : 'Success! Resume generated.';
+                setStatus(generateStatus, msg, 'success');
+            }
         } catch (error) {
             setStatus(generateStatus, `Error: ${error.message}`, 'error');
         }
